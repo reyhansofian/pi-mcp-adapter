@@ -2036,6 +2036,173 @@ describe("mcpAdapter session lifecycle", () => {
     expect(mocks.loadMcpConfig).toHaveBeenCalledWith(undefined);
   });
 
+  it("exports a guarded programmatic tool call for the active adapter session", async () => {
+    const state = createState();
+    mocks.initializeMcp.mockResolvedValue(state);
+    mocks.executeCall.mockResolvedValue({ content: [{ type: "text", text: "ok" }], details: { mode: "call" } });
+    const adapterModule = await import("../index.ts");
+    const { api, handlers } = createPi();
+    adapterModule.createMcpAdapter({ config: { mcpServers: { demo: { command: "demo" } } } })(api);
+
+    await handlers.get("session_start")?.({}, { hasUI: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    const controller = new AbortController();
+    const result = await adapterModule.callMcpTool({
+      pi: api,
+      server: "demo",
+      tool: "search",
+      args: { query: "ready" },
+      signal: controller.signal,
+    });
+
+    expect(result.details).toEqual({ mode: "call" });
+    expect(mocks.executeCall).toHaveBeenCalledWith(
+      state,
+      "search",
+      { query: "ready" },
+      "demo",
+      expect.any(Function),
+      controller.signal,
+    );
+
+    await handlers.get("session_shutdown")?.();
+    await expect(adapterModule.callMcpTool({ pi: api, server: "demo", tool: "search" }))
+      .rejects.toThrow("no active session state");
+  });
+
+  it("fails closed when the programmatic caller has no installed adapter", async () => {
+    const { callMcpTool } = await import("../index.ts");
+    await expect(callMcpTool({
+      pi: createPi().api,
+      server: "demo",
+      tool: "search",
+    })).rejects.toThrow("not installed");
+  });
+
+  it("routes programmatic calls from a peer extension wrapper through the event bridge", async () => {
+    const state = createState();
+    mocks.initializeMcp.mockResolvedValue(state);
+    mocks.executeCall.mockResolvedValue({ content: [{ type: "text", text: "peer-ok" }] });
+    const adapterModule = await import("../index.ts");
+    const owner = createPi();
+    const peer = createPi();
+    const listeners = new Map<string, Set<(value: unknown) => void>>();
+    const events = {
+      on: vi.fn((event: string, handler: (value: unknown) => void) => {
+        const handlers = listeners.get(event) ?? new Set();
+        handlers.add(handler);
+        listeners.set(event, handlers);
+        return () => handlers.delete(handler);
+      }),
+      emit: vi.fn((event: string, value: unknown) => {
+        for (const handler of listeners.get(event) ?? []) handler(value);
+      }),
+    };
+    owner.api.events = events as any;
+    peer.api.events = events as any;
+    adapterModule.createMcpAdapter({ config: { mcpServers: { demo: { command: "demo" } } } })(owner.api);
+    await owner.handlers.get("session_start")?.({}, { hasUI: false });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const controller = new AbortController();
+    await expect(adapterModule.callMcpTool({ pi: peer.api, server: "demo", tool: "search",
+      args: { query: "peer" }, signal: controller.signal })).resolves.toMatchObject({ content: [{ text: "peer-ok" }] });
+    expect(mocks.executeCall).toHaveBeenCalledWith(state, "search", { query: "peer" }, "demo",
+      expect.any(Function), controller.signal);
+  });
+
+  it("lets only the active replacement adapter claim peer calls after reload", async () => {
+    const staleState = createState();
+    const activeState = createState();
+    mocks.initializeMcp.mockResolvedValueOnce(staleState).mockResolvedValueOnce(activeState);
+    mocks.executeCall.mockResolvedValue({ content: [{ type: "text", text: "active" }] });
+    const adapterModule = await import("../index.ts");
+    expect(adapterModule.callMcpTool).toEqual(expect.any(Function));
+    const stale = createPi();
+    const active = createPi();
+    const peer = createPi();
+    const listeners = new Map<string, Set<(value: unknown) => void>>();
+    const events = {
+      on: vi.fn((event: string, handler: (value: unknown) => void) => {
+        const handlers = listeners.get(event) ?? new Set();
+        handlers.add(handler);
+        listeners.set(event, handlers);
+        return () => handlers.delete(handler);
+      }),
+      emit: vi.fn((event: string, value: unknown) => {
+        for (const handler of [...(listeners.get(event) ?? [])]) handler(value);
+      }),
+    };
+    stale.api.events = events as any;
+    active.api.events = events as any;
+    peer.api.events = events as any;
+    adapterModule.createMcpAdapter({ config: { mcpServers: { demo: { command: "stale" } } } })(stale.api);
+    await stale.handlers.get("session_start")?.({}, { hasUI: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    await stale.handlers.get("session_shutdown")?.();
+    adapterModule.createMcpAdapter({ config: { mcpServers: { demo: { command: "active" } } } })(active.api);
+    await active.handlers.get("session_start")?.({}, { hasUI: false });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(adapterModule.callMcpTool({ pi: peer.api, server: "demo", tool: "search" }))
+      .resolves.toMatchObject({ content: [{ text: "active" }] });
+    expect(mocks.executeCall).toHaveBeenCalledTimes(1);
+    expect(mocks.executeCall.mock.calls[0]?.[0]).toBe(activeState);
+  });
+
+  it("fails closed when multiple active adapters can claim a peer call", async () => {
+    mocks.initializeMcp.mockResolvedValue(createState());
+    const adapterModule = await import("../index.ts");
+    const first = createPi();
+    const second = createPi();
+    const peer = createPi();
+    const listeners = new Map<string, Set<(value: unknown) => void>>();
+    const events = {
+      on(event: string, handler: (value: unknown) => void) {
+        const handlers = listeners.get(event) ?? new Set();
+        handlers.add(handler);
+        listeners.set(event, handlers);
+        return () => handlers.delete(handler);
+      },
+      emit(event: string, value: unknown) {
+        for (const handler of listeners.get(event) ?? []) handler(value);
+      },
+    };
+    first.api.events = events as any;
+    second.api.events = events as any;
+    peer.api.events = events as any;
+    for (const owner of [first, second]) {
+      adapterModule.createMcpAdapter({ config: { mcpServers: { demo: { command: "demo" } } } })(owner.api);
+      await owner.handlers.get("session_start")?.({}, { hasUI: false });
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    await expect(adapterModule.callMcpTool({ pi: peer.api, server: "demo", tool: "search" }))
+      .rejects.toThrow("multiple active runtime call owners");
+    expect(mocks.executeCall).not.toHaveBeenCalled();
+  });
+
+  it("rejects an already-aborted programmatic call before guarded execution", async () => {
+    mocks.initializeMcp.mockResolvedValue(createState());
+    const adapterModule = await import("../index.ts");
+    const owner = createPi();
+    adapterModule.createMcpAdapter({ config: { mcpServers: { demo: { command: "demo" } } } })(owner.api);
+    await owner.handlers.get("session_start")?.({}, { hasUI: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    const controller = new AbortController();
+    controller.abort(new Error("caller cancelled"));
+
+    await expect(adapterModule.callMcpTool({ pi: owner.api, server: "demo", tool: "search", signal: controller.signal }))
+      .rejects.toThrow("caller cancelled");
+    expect(mocks.executeCall).not.toHaveBeenCalled();
+  });
+
   it("uses only the supplied config for early registration and session initialization", async () => {
     const config = {
       mcpServers: {

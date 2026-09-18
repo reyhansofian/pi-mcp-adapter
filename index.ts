@@ -61,6 +61,32 @@ export interface McpServerRegistration {
   dispose(): Promise<void>;
 }
 
+export interface McpToolCallOptions {
+  pi: ExtensionAPI;
+  server: string;
+  tool: string;
+  args?: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+export interface McpToolCallResult {
+  content: unknown[];
+  details?: Record<string, unknown>;
+}
+
+export const MCP_RUNTIME_CALL_EVENT = "pi-mcp-adapter:runtime-call:v1" as const;
+export const MCP_RUNTIME_CALL_VERSION = 1 as const;
+
+export interface McpRuntimeCallRequest {
+  version: typeof MCP_RUNTIME_CALL_VERSION;
+  server: string;
+  tool: string;
+  args?: Record<string, unknown>;
+  signal?: AbortSignal;
+  result?: Promise<McpToolCallResult>;
+  claimants?: Array<() => Promise<McpToolCallResult>>;
+}
+
 export const MCP_RUNTIME_REGISTER_EVENT = "pi-mcp-adapter:runtime-register:v1" as const;
 export const MCP_RUNTIME_REGISTER_VERSION = 1 as const;
 
@@ -98,6 +124,7 @@ export interface McpRuntimeSnapshotRequest {
 // Fast path for callers that share the adapter's module and ExtensionAPI.
 const runtimeRegistrars = new WeakMap<ExtensionAPI, (name: string, definition: ServerEntry) => McpServerRegistration>();
 const runtimeSnapshotters = new WeakMap<ExtensionAPI, (name: string) => McpRuntimeServerSnapshot>();
+const runtimeCallers = new WeakMap<ExtensionAPI, (options: Omit<McpToolCallOptions, "pi">) => Promise<McpToolCallResult>>();
 
 function resolveProgrammaticClaudePluginPath(path: string, cwd: string): string {
   if (path === "~") return resolve(process.env.HOME ?? "", ".");
@@ -802,6 +829,32 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   });
 
   const getPiTools = (): ToolInfo[] => pi.getAllTools();
+  const callRuntime = async ({ server, tool, args, signal }: Omit<McpToolCallOptions, "pi">): Promise<McpToolCallResult> => {
+    if (signal?.aborted) throw signal.reason ?? new Error("MCP tool call aborted");
+    let activeState = state;
+    if (!activeState && initPromise) {
+      const initialized = await awaitWithTimeout(initPromise, INIT_WAIT_TIMEOUT_MS);
+      if (initialized === INIT_WAIT_TIMED_OUT) throw new Error("pi-mcp-adapter initialization is still in progress");
+      if (!state) state = initialized;
+      activeState = initialized;
+    }
+    if (!activeState || !currentOwner?.isActive()) {
+      throw new Error("pi-mcp-adapter has no active session state");
+    }
+    const guard = captureRuntimeGuard(activeState);
+    const proxyModes = await loadForRuntime(loadProxyModes, guard);
+    const result = await proxyModes.executeCall(activeState, tool, args, server, getPiTools, signal);
+    assertRuntimeGuard(guard);
+    return result as McpToolCallResult;
+  };
+  runtimeCallers.set(pi, callRuntime);
+  const disposeRuntimeCaller = pi.events.on(MCP_RUNTIME_CALL_EVENT, (rawRequest: unknown) => {
+    if (typeof rawRequest !== "object" || rawRequest === null || Array.isArray(rawRequest)) return;
+    const request = rawRequest as McpRuntimeCallRequest;
+    if (request.result !== undefined || request.version !== MCP_RUNTIME_CALL_VERSION
+      || !currentOwner?.isActive() || runtimeCallers.get(pi) !== callRuntime) return;
+    (request.claimants ??= []).push(() => callRuntime(request));
+  });
 
   pi.registerFlag("mcp-config", {
     description: "Path to MCP config file",
@@ -1134,6 +1187,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     initPromise = null;
     initStartedPromise = null;
     clearRetainedInitFailure();
+    if (typeof disposeRuntimeCaller === "function") disposeRuntimeCaller();
 
     // Abort before awaiting cleanup so delayed initialization cannot touch stale
     // Pi context after session shutdown.
@@ -1963,6 +2017,33 @@ export function getRuntimeMcpServerSnapshot(options: { pi: ExtensionAPI; name: s
   }
   if (!request.result.ok) throw request.result.error;
   return request.result.snapshot;
+}
+
+/**
+ * Call one configured MCP tool without a model turn. The adapter retains
+ * ownership of connection, approval, filtering, recovery, and output guards.
+ */
+export async function callMcpTool(options: McpToolCallOptions): Promise<McpToolCallResult> {
+  if (typeof options.server !== "string" || options.server.trim() === "") {
+    throw new Error("MCP tool call server must be a non-empty string");
+  }
+  if (typeof options.tool !== "string" || options.tool.trim() === "") {
+    throw new Error("MCP tool call tool must be a non-empty string");
+  }
+  const call = runtimeCallers.get(options.pi);
+  if (call) return call(options);
+  const request: McpRuntimeCallRequest = {
+    version: MCP_RUNTIME_CALL_VERSION,
+    server: options.server,
+    tool: options.tool,
+    ...(options.args !== undefined ? { args: options.args } : {}),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+  };
+  options.pi.events.emit(MCP_RUNTIME_CALL_EVENT, request);
+  if (request.result) return request.result;
+  if (!request.claimants?.length) throw new Error("pi-mcp-adapter is not installed for this Pi instance");
+  if (request.claimants.length !== 1) throw new Error("pi-mcp-adapter has multiple active runtime call owners");
+  return request.claimants[0]!();
 }
 
 export default createMcpAdapter();

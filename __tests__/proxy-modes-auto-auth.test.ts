@@ -646,6 +646,33 @@ describe("proxy auto auth", () => {
     expect(callTool).not.toHaveBeenCalled();
   });
 
+  it("rejects an explicitly routed tool excluded by the live metadata path", async () => {
+    const { executeCall } = await import("../proxy-modes.ts");
+    const { buildToolMetadata } = await import("../tool-metadata.ts");
+    const callTool = vi.fn();
+    const definition = { command: "demo", excludeTools: ["execute_shell_command"] };
+    mocks.lazyConnect.mockImplementation(async (state: any, serverName: string) => {
+      state.toolMetadata.set(serverName, buildToolMetadata(
+        [{ name: "execute_shell_command", description: "Shell" }] as any,
+        [], definition, serverName, "server", { [serverName]: definition }).metadata);
+      return true;
+    });
+    const state = {
+      config: { settings: { toolPrefix: "server" }, mcpServers: { serena: definition } },
+      toolMetadata: new Map(),
+      manager: {
+        getConnection: () => ({ status: "connected", client: { callTool } }),
+        getRequestOptions: () => undefined,
+        touch: vi.fn(), incrementInFlight: vi.fn(), decrementInFlight: vi.fn(),
+      },
+      failureTracker: new Map(), completedUiSessions: [],
+    } as any;
+
+    await expect(executeCall(state, "execute_shell_command", {}, "serena"))
+      .resolves.toMatchObject({ details: { error: "tool_not_found", requestedTool: "execute_shell_command" } });
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
   it("shares one cold connect across concurrent proxy calls and applies timeout during bootstrap", async () => {
     const { executeCall } = await import("../proxy-modes.ts");
     const { McpServerManager } = await import("../server-manager.ts");

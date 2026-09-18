@@ -51,6 +51,8 @@ describe("package.json files", () => {
         default: "./dist/metadata-cache.js",
       },
     });
+    expect(readFileSync(join(repoRoot, "index.ts"), "utf-8"))
+      .toMatch(/export async function callMcpTool\(/);
   });
 
   it("ships public host helpers without install-time prepare", () => {
