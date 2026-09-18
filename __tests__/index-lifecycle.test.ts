@@ -2080,6 +2080,21 @@ describe("mcpAdapter session lifecycle", () => {
     })).rejects.toThrow("not installed");
   });
 
+  it("rejects a result-only runtime event completion", async () => {
+    const { callMcpTool } = await import("../index.ts");
+    const { api } = createPi();
+    const emit = vi.fn((event: string, request: any) => {
+      expect(event).toBe("pi-mcp-adapter:runtime-call:v2");
+      expect(request.version).toBe(2);
+      request.result = Promise.resolve({ content: [{ type: "text", text: "bypassed" }] });
+    });
+    api.events = { emit } as any;
+
+    await expect(callMcpTool({ pi: api, server: "demo", tool: "search" }))
+      .rejects.toThrow("not installed");
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
   it("routes programmatic calls from a peer extension wrapper through the event bridge", async () => {
     const state = createState();
     mocks.initializeMcp.mockResolvedValue(state);
@@ -2185,6 +2200,17 @@ describe("mcpAdapter session lifecycle", () => {
     await expect(adapterModule.callMcpTool({ pi: peer.api, server: "demo", tool: "search" }))
       .rejects.toThrow("multiple active runtime call owners");
     expect(mocks.executeCall).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a runtime claimant is not callable", async () => {
+    const { callMcpTool } = await import("../index.ts");
+    const { api } = createPi();
+    api.events = { emit: vi.fn((_event: string, request: any) => {
+      request.claimants = [null];
+    }) } as any;
+
+    await expect(callMcpTool({ pi: api, server: "demo", tool: "search" }))
+      .rejects.toThrow("runtime call owner is invalid");
   });
 
   it("rejects an already-aborted programmatic call before guarded execution", async () => {

@@ -74,8 +74,8 @@ export interface McpToolCallResult {
   details?: Record<string, unknown>;
 }
 
-export const MCP_RUNTIME_CALL_EVENT = "pi-mcp-adapter:runtime-call:v1" as const;
-export const MCP_RUNTIME_CALL_VERSION = 1 as const;
+export const MCP_RUNTIME_CALL_EVENT = "pi-mcp-adapter:runtime-call:v2" as const;
+export const MCP_RUNTIME_CALL_VERSION = 2 as const;
 
 export interface McpRuntimeCallRequest {
   version: typeof MCP_RUNTIME_CALL_VERSION;
@@ -83,7 +83,6 @@ export interface McpRuntimeCallRequest {
   tool: string;
   args?: Record<string, unknown>;
   signal?: AbortSignal;
-  result?: Promise<McpToolCallResult>;
   claimants?: Array<() => Promise<McpToolCallResult>>;
 }
 
@@ -851,7 +850,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   const disposeRuntimeCaller = pi.events.on(MCP_RUNTIME_CALL_EVENT, (rawRequest: unknown) => {
     if (typeof rawRequest !== "object" || rawRequest === null || Array.isArray(rawRequest)) return;
     const request = rawRequest as McpRuntimeCallRequest;
-    if (request.result !== undefined || request.version !== MCP_RUNTIME_CALL_VERSION
+    if (request.version !== MCP_RUNTIME_CALL_VERSION
       || !currentOwner?.isActive() || runtimeCallers.get(pi) !== callRuntime) return;
     (request.claimants ??= []).push(() => callRuntime(request));
   });
@@ -2040,9 +2039,9 @@ export async function callMcpTool(options: McpToolCallOptions): Promise<McpToolC
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
   };
   options.pi.events.emit(MCP_RUNTIME_CALL_EVENT, request);
-  if (request.result) return request.result;
   if (!request.claimants?.length) throw new Error("pi-mcp-adapter is not installed for this Pi instance");
   if (request.claimants.length !== 1) throw new Error("pi-mcp-adapter has multiple active runtime call owners");
+  if (typeof request.claimants[0] !== "function") throw new Error("pi-mcp-adapter runtime call owner is invalid");
   return request.claimants[0]!();
 }
 
