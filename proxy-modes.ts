@@ -1457,6 +1457,7 @@ export async function executeCall(
         })
       : null;
 
+    state.validateBoundServer?.(serverName);
     const result = await withSessionRecovery<ClientCallToolResult>(
       {
         manager: state.manager,

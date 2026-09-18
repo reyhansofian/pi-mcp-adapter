@@ -300,6 +300,7 @@ export function createDirectToolExecutor(
           })
         : null;
 
+      state.validateBoundServer?.(spec.serverName);
       const result = await withSessionRecovery<ClientCallToolResult>(
         {
           manager: state.manager,

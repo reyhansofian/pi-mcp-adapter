@@ -233,6 +233,11 @@ export function isTransientHttpConnectError(error: unknown): boolean {
 
 export class McpServerManager {
   private connections = new Map<string, ServerConnection>();
+  private connectionGuard: ((serverName: string) => void) | undefined;
+
+  setConnectionGuard(guard: ((serverName: string) => void) | undefined): void {
+    this.connectionGuard = guard;
+  }
   private connectPromises = new Map<string, Promise<ServerConnection>>();
   private connectOAuthAuthorities = new Map<string, OAuthAuthority>();
   private reconnectPromises = new Map<string, Promise<ServerConnection>>();
@@ -350,6 +355,7 @@ export class McpServerManager {
   }
 
   async connect(name: string, definition: ServerDefinition, signal?: AbortSignal): Promise<ServerConnection> {
+    this.connectionGuard?.(name);
     validateCaFile(definition);
     if (isServerDisabled(definition)) throw new Error(`MCP server "${name}" is disabled`);
     if (this.stopped) throw new Error("MCP server manager is closed");

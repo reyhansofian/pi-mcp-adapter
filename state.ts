@@ -42,6 +42,9 @@ export interface McpExtensionState {
   promptMetadataLive: Set<string>;
   serverInstructions: Map<string, string>;
   config: McpConfig;
+  /** Instance-local metadata for lease-bound servers; never persisted globally. */
+  metadataCache?: import("./types.ts").MetadataCache;
+  validateBoundServer?: (serverName: string) => void;
   programmaticConfig?: boolean;
   /** Install validations must not publish durable cache entries before config persistence. */
   provisionalInstalls?: Set<string>;

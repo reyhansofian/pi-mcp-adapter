@@ -675,6 +675,9 @@ export interface McpConfig {
 export interface McpAdapterOptions {
   config?: McpConfig;
   configPath?: string;
+  /** Instance-local metadata supplied by a validated workspace binding. */
+  metadataCache?: MetadataCache;
+  validateBoundServer?: (serverName: string) => void;
 }
 
 // Alias for clarity

@@ -12,6 +12,7 @@ import { buildProxyDescription, getMissingConfiguredDirectToolServers, prepareDi
 import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
 import { computeServerHash, isServerCacheValid, loadMetadataCache, parseDirectToolSelectors, type MetadataCache } from "./metadata-cache.ts";
 import { createPromptCommand, resolveCachedPrompts } from "./prompts.ts";
+import { loadWorkspaceHandoff } from "./workspace-handoff.ts";
 import { logger } from "./logger.ts";
 import { formatTerminalError, getConfigPathFromArgv, normalizeDirectToolInputSchema, truncateAtWord } from "./utils.ts";
 import { createMcpDirectToolCallRenderer, createMcpProxyToolCallRenderer, createMcpScriptToolCallRenderer, createMcpToolResultRenderer, resolveMcpToolRenderOptions } from "./tool-result-renderer.ts";
@@ -156,7 +157,11 @@ function resolveNamespaceEnvOverride(
 }
 
 function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
-  const sessionConfig = options.config !== undefined ? cloneMcpConfig(options.config) : undefined;
+  const workspaceHandoff = loadWorkspaceHandoff(process.env.PI_SUBAGENT_EXTENSION_BINDINGS);
+  const ambientConfig = options.config !== undefined ? cloneMcpConfig(options.config) : workspaceHandoff ? loadMcpConfig(options.configPath ?? getConfigPathFromArgv()) : undefined;
+  const sessionConfig = workspaceHandoff
+    ? { ...ambientConfig, mcpServers: { ...(ambientConfig?.mcpServers ?? {}), ...workspaceHandoff.config.mcpServers } }
+    : ambientConfig;
   const programmaticConfig = sessionConfig !== undefined;
   let state: McpExtensionState | null = null;
   let initPromise: Promise<McpExtensionState> | null = null;
@@ -316,7 +321,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   const earlyConfig = programmaticConfig
     ? resolveConfiguredClaudePluginMcp(cloneMcpConfig(sessionConfig), process.cwd())
     : loadMcpConfig(earlyConfigPath);
-  const earlyCache = loadMetadataCache();
+  const earlyCache = workspaceHandoff?.cache ?? loadMetadataCache();
   const envRaw = process.env.MCP_DIRECT_TOOLS;
   const envDirectToolOverride = parseEnvDirectToolOverride(envRaw);
   const namespaceEnvOverride = resolveNamespaceEnvOverride(envRaw, envDirectToolOverride);
@@ -589,7 +594,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   }
 
   function loadToolSurfaceCache(config: McpConfig): MetadataCache | null {
-    const cache = loadMetadataCache();
+    const cache = workspaceHandoff?.cache ?? loadMetadataCache();
     const currentState = state;
     if (!currentState || !cache) return cache;
     const servers = { ...cache.servers };
@@ -844,6 +849,8 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
             }
           : {}),
         oauthRuntime,
+        ...(workspaceHandoff ? { metadataCache: workspaceHandoff.cache } : {}),
+        ...(workspaceHandoff ? { validateBoundServer: (name: string) => { if (name === "serena") workspaceHandoff.assertValid(); } } : {}),
       });
       assertRuntimeGuard(guard);
       markStarted();
@@ -1066,7 +1073,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     if (envRaw !== undefined && envRaw !== "__none__") {
       const missingEnvDirectTools = getMissingConfiguredDirectToolServers(
         earlyConfig,
-        loadMetadataCache(),
+        workspaceHandoff ? earlyCache : loadMetadataCache(),
         envDirectToolOverride,
       );
       if (missingEnvDirectTools.length > 0) {

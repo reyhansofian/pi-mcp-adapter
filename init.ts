@@ -146,6 +146,10 @@ export async function initializeMcp(
   const ownsOAuthRuntime = options.oauthRuntime === undefined;
   const oauthRuntime = options.oauthRuntime ?? createOAuthRuntime(owner.signal);
   const manager = new McpServerManager(cwd);
+  if (options.validateBoundServer && typeof manager.setConnectionGuard !== "function") {
+    throw new Error("Bound MCP server validation is unavailable");
+  }
+  manager.setConnectionGuard?.(options.validateBoundServer);
   manager.setRuntimeSignal?.(owner.signal);
   manager.setOAuthRuntime?.(oauthRuntime);
   manager.setDefaultRequestTimeoutMs(config.settings?.requestTimeoutMs);
@@ -203,6 +207,8 @@ export async function initializeMcp(
     promptMetadataLive,
     serverInstructions,
     config,
+    ...(options.metadataCache ? { metadataCache: options.metadataCache } : {}),
+    ...(options.validateBoundServer ? { validateBoundServer: options.validateBoundServer } : {}),
     programmaticConfig: options.config !== undefined,
     oauthRuntime,
     authStorageOptions,
@@ -275,16 +281,16 @@ export async function initializeMcp(
   lifecycle.setGlobalIdleTimeout(idleSetting);
 
   const cachePath = getMetadataCachePath();
-  const cacheFileExists = existsSync(cachePath);
-  let cache = loadMetadataCache();
+  const cacheFileExists = options.metadataCache !== undefined || existsSync(cachePath);
+  let cache = options.metadataCache ?? loadMetadataCache();
   let bootstrapAll = false;
 
   if (!cacheFileExists) {
     bootstrapAll = true;
-    saveMetadataCache({ version: 1, servers: {} });
+    if (!options.metadataCache) saveMetadataCache({ version: 1, servers: {} });
   } else if (!cache) {
     cache = { version: 1, servers: {} };
-    saveMetadataCache(cache);
+    if (!options.metadataCache) saveMetadataCache(cache);
   }
 
   const prefix = config.settings?.toolPrefix ?? "server";
@@ -437,7 +443,7 @@ export async function initializeMcp(
 
   const envDirect = process.env.MCP_DIRECT_TOOLS;
   if (envDirect !== "__none__") {
-    const currentCache = loadMetadataCache();
+    const currentCache = state.metadataCache ?? loadMetadataCache();
     const envDirectToolOverride = envDirect?.split(",").map(selector => selector.trim()).filter(Boolean);
     const missingCacheServers = getMissingConfiguredDirectToolServers(config, currentCache, envDirectToolOverride);
 
@@ -580,7 +586,7 @@ export function updateMetadataCache(
   if (!definition || isServerDisabled(definition)) return;
 
   const configHash = computeServerHash(definition);
-  const existing = loadMetadataCache();
+  const existing = state.metadataCache ?? loadMetadataCache();
   const existingEntry = existing?.servers?.[serverName];
 
   const tools = serializeTools(connection.tools);
@@ -609,7 +615,8 @@ export function updateMetadataCache(
     cachedAt: Date.now(),
   };
 
-  saveMetadataCache({ version: 1, servers: { [serverName]: entry } });
+  if (state.metadataCache) state.metadataCache.servers[serverName] = entry;
+  else saveMetadataCache({ version: 1, servers: { [serverName]: entry } });
 }
 
 export function notifyToolMetadataUpdated(state: McpExtensionState, serverName: string, reason: string): void {

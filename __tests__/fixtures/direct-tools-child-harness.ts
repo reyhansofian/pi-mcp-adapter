@@ -23,13 +23,15 @@ const loader = new DefaultResourceLoader({
   additionalExtensionPaths: [adapterPath, probePath],
 });
 await loader.reload();
+const invoke = process.env.MCP_CHILD_INVOKE_TOOL ?? "demo_reload_identity";
+const allowedTools = process.env.MCP_CHILD_TOOL_ALLOWLIST?.split(",").filter(Boolean) ?? [invoke];
 const { session } = await createAgentSession({
   cwd: projectDir,
   agentDir,
   resourceLoader: loader,
   sessionManager: SessionManager.inMemory(projectDir),
   settingsManager,
-  tools: ["demo_reload_identity"],
+  tools: allowedTools,
 });
 await session.bindExtensions({ mode: "print", onError: error => console.error(error.error) });
 
@@ -41,11 +43,11 @@ try {
     await session.extensionRunner.emitInput(process.env.MCP_CHILD_INPUT, undefined, "interactive");
   }
   await session.extensionRunner.emit({ type: "agent_start" });
-  const invoke = process.env.MCP_CHILD_INVOKE_TOOL;
   if (invoke) {
     const tool = session.getToolDefinition(invoke);
     if (!tool) throw new Error(`Direct tool was not registered with the agent: ${invoke}`);
-    const result = await tool.execute("direct-tool-call", {}, undefined, undefined, session.extensionRunner.createContext());
+    const argumentsValue = JSON.parse(process.env.MCP_CHILD_ARGUMENTS ?? "{}");
+    const result = await tool.execute("direct-tool-call", argumentsValue, undefined, undefined, session.extensionRunner.createContext());
     console.log(`DIRECT_TOOL_RESULT=${JSON.stringify(result.content)}`);
   }
 } finally {

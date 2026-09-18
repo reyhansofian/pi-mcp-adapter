@@ -128,6 +128,7 @@
     "lifecycle.ts",
     "mcp-status.ts",
     "metadata-cache.ts",
+    "workspace-handoff.ts",
     "host-html-template.ts",
     "sandbox-proxy-template.ts",
     "ui-resource-handler.ts",
