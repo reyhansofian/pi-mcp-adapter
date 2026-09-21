@@ -77,6 +77,7 @@
     "cli.js",
     "agent-dir.ts",
     "index.ts",
+    "extension-binding-context.ts",
     "error-signal.ts",
     "state.ts",
     "utils.ts",

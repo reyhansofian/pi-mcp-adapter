@@ -13,6 +13,7 @@ import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
 import { computeServerHash, isServerCacheValid, loadMetadataCache, parseDirectToolSelectors, type MetadataCache } from "./metadata-cache.ts";
 import { createPromptCommand, resolveCachedPrompts } from "./prompts.ts";
 import { loadWorkspaceHandoff } from "./workspace-handoff.ts";
+import { resolveExtensionInitializationInputs } from "./extension-binding-context.ts";
 import { logger } from "./logger.ts";
 import { formatTerminalError, getConfigPathFromArgv, normalizeDirectToolInputSchema, truncateAtWord } from "./utils.ts";
 import { createMcpDirectToolCallRenderer, createMcpProxyToolCallRenderer, createMcpScriptToolCallRenderer, createMcpToolResultRenderer, resolveMcpToolRenderOptions } from "./tool-result-renderer.ts";
@@ -183,7 +184,8 @@ function resolveNamespaceEnvOverride(
 }
 
 function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
-  const workspaceHandoff = loadWorkspaceHandoff(process.env.PI_SUBAGENT_EXTENSION_BINDINGS);
+  const extensionInputs = resolveExtensionInitializationInputs();
+  const workspaceHandoff = loadWorkspaceHandoff(extensionInputs.extensionBindingsJson);
   const ambientConfig = options.config !== undefined ? cloneMcpConfig(options.config) : workspaceHandoff ? loadMcpConfig(options.configPath ?? getConfigPathFromArgv()) : undefined;
   const sessionConfig = workspaceHandoff
     ? { ...ambientConfig, mcpServers: { ...(ambientConfig?.mcpServers ?? {}), ...workspaceHandoff.config.mcpServers } }
@@ -348,7 +350,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     ? resolveConfiguredClaudePluginMcp(cloneMcpConfig(sessionConfig), process.cwd())
     : loadMcpConfig(earlyConfigPath);
   const earlyCache = workspaceHandoff?.cache ?? loadMetadataCache();
-  const envRaw = process.env.MCP_DIRECT_TOOLS;
+  const envRaw = extensionInputs.mcpDirectTools;
   const envDirectToolOverride = parseEnvDirectToolOverride(envRaw);
   const namespaceEnvOverride = resolveNamespaceEnvOverride(envRaw, envDirectToolOverride);
   const enabledEarlyServers = Object.entries(earlyConfig.mcpServers)
